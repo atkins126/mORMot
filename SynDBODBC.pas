@@ -6,7 +6,7 @@ unit SynDBODBC;
 {
     This file is part of Synopse mORMot framework.
 
-    Synopse mORMot framework. Copyright (C) 2020 Arnaud Bouchez
+    Synopse mORMot framework. Copyright (C) 2021 Arnaud Bouchez
       Synopse Informatique - https://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -25,7 +25,7 @@ unit SynDBODBC;
 
   The Initial Developer of the Original Code is Arnaud Bouchez.
 
-  Portions created by the Initial Developer are Copyright (C) 2020
+  Portions created by the Initial Developer are Copyright (C) 2021
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -1729,8 +1729,14 @@ begin
             if ansitext then begin
   retry:      VData := CurrentAnsiConvert.UTF8ToAnsi(VData);
               CValueType := SQL_C_CHAR;
-            end else
+            end else begin
               VData := Utf8DecodeToRawUnicode(VData);
+              if (fDBMS=dMSSQL) then begin // statements like CONTAINS(field, ?) do not accept NVARCHAR(max)
+                ColumnSize := length(VData) shr 1; // length in characters
+                if (ColumnSize > 4000) then // > 8000 bytes - use varchar(max)
+                  ColumnSize := 0;
+              end;
+            end;
           ftBlob:
             StrLen_or_Ind[p] := length(VData);
           else

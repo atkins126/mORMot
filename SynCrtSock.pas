@@ -2498,9 +2498,9 @@ type
     function Request(const uri: SockString; const method: SockString='GET';
       const header: SockString = ''; const data: SockString = '';
       const datatype: SockString = ''; keepalive: cardinal=10000): integer; overload;
-    /// returns the HTTP body as returnsd by a previous call to Request()
+    /// returns the HTTP body as returned by a previous call to Request()
     property Body: SockString read fBody;
-    /// returns the HTTP headers as returnsd by a previous call to Request()
+    /// returns the HTTP headers as returned by a previous call to Request()
     property Headers: SockString read fHeaders;
     /// allows to customize the user-agent header
     property UserAgent: SockString read fUserAgent write fUserAgent;
@@ -6691,11 +6691,14 @@ end;
 {$ifndef LVCL}
 procedure TSynThread.DoTerminate;
 begin
-  if Assigned(fStartNotified) and Assigned(fOnThreadTerminate) then begin
-    fOnThreadTerminate(self);
-    fStartNotified := nil;
+  try
+    if Assigned(fStartNotified) and Assigned(fOnThreadTerminate) then begin
+      fOnThreadTerminate(self);
+      fStartNotified := nil;
+    end;
+    inherited DoTerminate; // call OnTerminate via Synchronize()
+  except // hardened: a closing thread should not jeopardize the whole project!
   end;
-  inherited DoTerminate;
 end;
 {$endif}
 

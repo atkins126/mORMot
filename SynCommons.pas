@@ -522,6 +522,30 @@ type
 
 { ************ fast UTF-8 / Unicode / Ansi types and conversion routines **** }
 
+// some constants used for UTF-8 conversion, including surrogates
+const
+  UTF16_HISURROGATE_MIN = $d800;
+  UTF16_HISURROGATE_MAX = $dbff;
+  UTF16_LOSURROGATE_MIN = $dc00;
+  UTF16_LOSURROGATE_MAX = $dfff;
+  UTF8_EXTRABYTES: array[$80..$ff] of byte = (
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,0,0);
+  UTF8_EXTRA: array[0..6] of record
+    offset, minimum: cardinal;
+  end = ( // http://floodyberry.wordpress.com/2007/04/14/utf-8-conversion-tricks
+    (offset: $00000000;  minimum: $00010000),
+    (offset: $00003080;  minimum: $00000080),
+    (offset: $000e2080;  minimum: $00000800),
+    (offset: $03c82080;  minimum: $00010000),
+    (offset: $fa082080;  minimum: $00200000),
+    (offset: $82082080;  minimum: $04000000),
+    (offset: $00000000;  minimum: $04000000));
+  UTF8_EXTRA_SURROGATE = 3;
+  UTF8_FIRSTBYTE: array[2..6] of byte = ($c0,$e0,$f0,$f8,$fc);
+
 type
   /// kind of adding in a TTextWriter
   TTextWriterKind = (twNone, twJSONEscape, twOnSameLine);
@@ -1139,18 +1163,6 @@ function UTF8ToWideChar(dest: PWideChar; source: PUTF8Char;
 // - count may not match the UCS4 glyphs number, in case of UTF-16 surrogates
 // - faster than System.UTF8ToUnicode with dest=nil
 function Utf8ToUnicodeLength(source: PUTF8Char): PtrUInt;
-
-/// returns TRUE if the supplied buffer has valid UTF-8 encoding
-// - will stop when the buffer contains #0
-function IsValidUTF8(source: PUTF8Char): Boolean; overload;
-
-/// returns TRUE if the supplied buffer has valid UTF-8 encoding
-// - will also refuse #0 characters within the buffer
-function IsValidUTF8(source: PUTF8Char; sourcelen: PtrInt): Boolean; overload;
-
-/// returns TRUE if the supplied buffer has valid UTF-8 encoding
-// - will also refuse #0 characters within the buffer
-function IsValidUTF8(const source: RawUTF8): Boolean; overload;
 
 /// returns TRUE if the supplied buffer has valid UTF-8 encoding with no #1..#31
 // control characters
@@ -5960,7 +5972,7 @@ type
     procedure Clear;
     /// full computation of the internal hash table
     // - returns the number of duplicated values found
-    function ReHash(forced, forceGrow: boolean): integer;
+    function ReHash(forced: boolean): integer;
     /// compute the hash of a given item
     function HashOne(Elem: pointer): cardinal; {$ifdef FPC_OR_DELPHIXE4}inline;{$endif}
       { not inlined to circumvent Delphi 2007=C1632, 2010=C1872, XE3=C2130 }
@@ -6061,7 +6073,7 @@ type
     // FindHashedForAdding / FindHashedAndUpdate / FindHashedAndDelete methods
     // - returns the number of duplicated items found - which won't be available
     // by hashed FindHashed() by definition
-    function ReHash(forAdd: boolean=false; forceGrow: boolean=false): integer;
+    function ReHash(forAdd: boolean=false): integer;
     /// search for an element value inside the dynamic array using hashing
     // - Elem should be of the type expected by both the hash function and
     // Equals/Compare methods: e.g. if the searched/hashed field in a record is
@@ -12060,9 +12072,7 @@ procedure FillZero(var secret: RawUTF8); overload;
   {$ifdef FPC}inline;{$endif}
 
 /// fill all bytes of a memory buffer with zero
-// - is expected to be used with a constant count from SizeOf() so that
-// inlining make it more efficient than FillCharFast(..,...,0):
-// ! FillZero(variable,SizeOf(variable));
+// - just redirect to FillCharFast(..,...,0)
 procedure FillZero(var dest; count: PtrInt); overload;
   {$ifdef HASINLINE}inline;{$endif}
 
@@ -12080,27 +12090,30 @@ type
   /// the potential features, retrieved from an Intel CPU
   // - see https://en.wikipedia.org/wiki/CPUID#EAX.3D1:_Processor_Info_and_Feature_Bits
   // - is defined on all platforms, since an ARM desktop could browse Intel logs
-  TIntelCpuFeature =
-   ( { CPUID 1 in EDX }
-   cfFPU, cfVME, cfDE, cfPSE, cfTSC, cfMSR, cfPAE, cfMCE,
-   cfCX8, cfAPIC, cf_d10, cfSEP, cfMTRR, cfPGE, cfMCA, cfCMOV,
-   cfPAT, cfPSE36, cfPSN, cfCLFSH, cf_d20, cfDS, cfACPI, cfMMX,
-   cfFXSR, cfSSE, cfSSE2, cfSS, cfHTT, cfTM, cfIA64, cfPBE,
+  TIntelCpuFeature = (
+   { CPUID 1 in EDX }
+   cfFPU,  cfVME,   cfDE,   cfPSE,   cfTSC,  cfMSR, cfPAE,  cfMCE,
+   cfCX8,  cfAPIC,  cf_d10, cfSEP,   cfMTRR, cfPGE, cfMCA,  cfCMOV,
+   cfPAT,  cfPSE36, cfPSN,  cfCLFSH, cf_d20, cfDS,  cfACPI, cfMMX,
+   cfFXSR, cfSSE,   cfSSE2, cfSS,    cfHTT,  cfTM,  cfIA64, cfPBE,
    { CPUID 1 in ECX }
-   cfSSE3, cfCLMUL, cfDS64, cfMON, cfDSCPL, cfVMX, cfSMX, cfEST,
-   cfTM2, cfSSSE3, cfCID, cfSDBG, cfFMA, cfCX16, cfXTPR, cfPDCM,
-   cf_c16, cfPCID, cfDCA, cfSSE41, cfSSE42, cfX2A, cfMOVBE, cfPOPCNT,
-   cfTSC2, cfAESNI, cfXS, cfOSXS, cfAVX, cfF16C, cfRAND, cfHYP,
-   { extended features CPUID 7 in EBX, ECX, DL }
-   cfFSGS, cf_b01, cfSGX, cfBMI1, cfHLE, cfAVX2, cf_b06, cfSMEP,
-   cfBMI2, cfERMS, cfINVPCID, cfRTM, cfPQM, cf_b13, cfMPX, cfPQE,
+   cfSSE3, cfCLMUL, cfDS64, cfMON,   cfDSCPL, cfVMX,  cfSMX,   cfEST,
+   cfTM2,  cfSSSE3, cfCID,  cfSDBG,  cfFMA,   cfCX16, cfXTPR,  cfPDCM,
+   cf_c16, cfPCID,  cfDCA,  cfSSE41, cfSSE42, cfX2A,  cfMOVBE, cfPOPCNT,
+   cfTSC2, cfAESNI, cfXS,   cfOSXS,  cfAVX,   cfF16C, cfRAND,  cfHYP,
+   { extended features CPUID 7 in EBX, ECX, EDX }
+   cfFSGS, cfTSCADJ, cfSGX,     cfBMI1,  cfHLE, cfAVX2, cfFDPEO, cfSMEP,
+   cfBMI2, cfERMS,   cfINVPCID, cfRTM,   cfPQM, cf_b13, cfMPX,   cfPQE,
    cfAVX512F, cfAVX512DQ, cfRDSEED, cfADX, cfSMAP, cfAVX512IFMA, cfPCOMMIT, cfCLFLUSH,
-   cfCLWB, cfIPT, cfAVX512PF, cfAVX512ER, cfAVX512CD, cfSHA, cfAVX512BW, cfAVX512VL,
-   cfPREFW1, cfAVX512VBMI, cfUMIP, cfPKU, cfOSPKE, cf_c05, cfAVX512VBMI2, cf_c07,
+   cfCLWB,  cfIPT, cfAVX512PF, cfAVX512ER, cfAVX512CD, cfSHA, cfAVX512BW, cfAVX512VL,
+   cfPREFW1, cfAVX512VBMI, cfUMIP, cfPKU, cfOSPKE, cf_c05, cfAVX512VBMI2, cfCETSS,
    cfGFNI, cfVAES, cfVCLMUL, cfAVX512NNI, cfAVX512BITALG, cf_c13, cfAVX512VPC, cf_c15,
-   cf_cc16, cf_c17, cf_c18, cf_c19, cf_c20, cf_c21, cfRDPID, cf_c23,
-   cf_c24, cf_c25, cf_c26, cf_c27, cf_c28, cf_c29, cfSGXLC, cf_c31,
-   cf_d0, cf_d1, cfAVX512NNIW, cfAVX512MAS, cf_d4, cf_d5, cf_d6, cf_d7);
+   cfFLP, cf_c17, cf_c18, cf_c19, cf_c20, cf_c21, cfRDPID, cf_c23,
+   cf_c24, cfCLDEMOTE, cf_c26, cfMOVDIRI, cfMOVDIR64B, cfENQCMD, cfSGXLC, cfPKS,
+   cf_d0, cf_d1, cfAVX512NNIW, cfAVX512MAPS, cfFSRM, cf_d5, cf_d6, cf_d7,
+   cfAVX512VP2I, cfSRBDS, cfMDCLR, cf_d11, cf_d12, cfTSXFA, cfSER, cfHYBRID,
+   cfTSXLDTRK,   cf_d17,  cfPCFG,  cfLBR,  cfIBT,  cf_d21,  cfAMXBF16, cf_d23,
+   cfAMXTILE, cfAMXINT8, cfIBRSPB, cfSTIBP, cfL1DFL, cfARCAB, cfCORCAB, cfSSBD);
 
   /// all features, as retrieved from an Intel CPU
   TIntelCpuFeatures = set of TIntelCpuFeature;
@@ -13707,7 +13720,7 @@ type
   {$ifdef FPC} // FPC already use heap instead of GlobalAlloc()
   THeapMemoryStream = TMemoryStream;
   {$else}
-  {$ifdef MSWINDOWS}
+  {$ifndef UNICODE} // old Delphi used GlobalAlloc()
   THeapMemoryStream = class(TMemoryStream)
   protected
     function Realloc(var NewCapacity: longint): Pointer; override;
@@ -16932,30 +16945,6 @@ var
   // internal list of TSynAnsiConvert instances
   SynAnsiConvertList: TSynObjectList = nil;
 
-// some constants used for UTF-8 conversion, including surrogates
-const
-  UTF16_HISURROGATE_MIN = $d800;
-  UTF16_HISURROGATE_MAX = $dbff;
-  UTF16_LOSURROGATE_MIN = $dc00;
-  UTF16_LOSURROGATE_MAX = $dfff;
-  UTF8_EXTRABYTES: array[$80..$ff] of byte = (
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,0,0);
-  UTF8_EXTRA: array[0..6] of record
-    offset, minimum: cardinal;
-  end = ( // http://floodyberry.wordpress.com/2007/04/14/utf-8-conversion-tricks
-    (offset: $00000000;  minimum: $00010000),
-    (offset: $00003080;  minimum: $00000080),
-    (offset: $000e2080;  minimum: $00000800),
-    (offset: $03c82080;  minimum: $00010000),
-    (offset: $fa082080;  minimum: $00200000),
-    (offset: $82082080;  minimum: $04000000),
-    (offset: $00000000;  minimum: $04000000));
-  UTF8_EXTRA_SURROGATE = 3;
-  UTF8_FIRSTBYTE: array[2..6] of byte = ($c0,$e0,$f0,$f8,$fc);
-
 {$ifdef HASINLINE}
 {$ifdef USE_VTYPE_STATIC} // circumvent weird bug on BSD + ARM (Alfred)
 procedure VarClear(var v: variant); // defined here for proper inlining
@@ -18426,56 +18415,6 @@ Quit:
 NoSource:
   if not NoTrailingZero then
     dest^ := #0; // always append a WideChar(0) to the end of the buffer
-end;
-
-function IsValidUTF8(source: PUTF8Char): Boolean;
-var extra, i: integer;
-    c: cardinal;
-begin
-  result := false;
-  if source<>nil then
-  repeat
-    c := byte(source^);
-    inc(source);
-    if c=0 then break else
-    if c and $80<>0 then begin
-      extra := UTF8_EXTRABYTES[c];
-      if extra=0 then exit else // invalid leading byte
-      for i := 1 to extra do
-        if byte(source^) and $c0<>$80 then
-          exit else
-          inc(source); // check valid UTF-8 content
-    end;
-  until false;
-  result := true;
-end;
-
-function IsValidUTF8(const source: RawUTF8): Boolean;
-begin
-  result := IsValidUTF8(pointer(Source),length(Source));
-end;
-
-function IsValidUTF8(source: PUTF8Char; sourcelen: PtrInt): Boolean;
-var extra, i: integer;
-    c: cardinal;
-begin
-  result := false;
-  inc(sourcelen,PtrInt(source));
-  if source<>nil then
-    while PtrInt(PtrUInt(source))<sourcelen do begin
-      c := byte(source^);
-      inc(source);
-      if c=0 then exit else
-      if c and $80<>0 then begin
-        extra := UTF8_EXTRABYTES[c];
-        if extra=0 then exit else // invalid leading byte
-        for i := 1 to extra do
-          if (PtrInt(PtrUInt(source))>=sourcelen) or (byte(source^) and $c0<>$80) then
-            exit else
-            inc(source); // check valid UTF-8 content
-      end;
-    end;
-  result := true;
 end;
 
 function IsValidUTF8WithoutControlChars(source: PUTF8Char): Boolean;
@@ -20018,8 +19957,6 @@ begin
   UniqueText(aResult);
 end;
 
-{$ifndef NOVARIANTS}
-
 procedure ClearVariantForString(var Value: variant); {$ifdef HASINLINE} inline; {$endif}
 var v: TVarData absolute Value;
 begin
@@ -20032,6 +19969,8 @@ begin
       v.VString := nil; // to avoid GPF when assign a RawByteString
     end;
 end;
+
+{$ifndef NOVARIANTS}
 
 procedure TRawUTF8Interning.UniqueVariant(var aResult: variant; const aText: RawUTF8);
 begin
@@ -37679,6 +37618,11 @@ begin
     L := StrLen(P);
   if L<4 then
     exit; // we need 'YYYY' at least
+  if (P[0]='''') and (P[L-1]='''') then begin // unquote input
+    inc(P);
+    dec(L, 2);
+    if L<4 then exit;
+  end;
   if P[0]='T' then begin
     dec(P,8);
     inc(L,8);
@@ -39959,6 +39903,7 @@ begin // see http://www.garykessler.net/library/file_sigs.html
     $46464f77, // 'application/font-woff' = wOFF in BigEndian
     $474e5089, // 'image/png' = 89 50 4E 47 0D 0A 1A 0A
     $4d5a4cff, // LZMA = FF 4C 5A 4D 41 00
+    $72613c21, // .ar/.deb files = '!<arch>' (assuming compressed)
     $75b22630, // 'audio/x-ms-wma' = 30 26 B2 75 8E 66
     $766f6f6d, // mov = 6D 6F 6F 76 [....moov]
     $89a8275f, // jar = 5F 27 A8 89
@@ -39970,6 +39915,7 @@ begin // see http://www.garykessler.net/library/file_sigs.html
     $afbc7a37, // 'application/x-7z-compressed' = 37 7A BC AF 27 1C
     $b7010000, $ba010000, // mpeg = 00 00 01 Bx
     $cececece, // jceks = CE CE CE CE
+    $dbeeabed, // .rpm package file
     $e011cfd0: // msi = D0 CF 11 E0 A1 B1 1A E1
       result := true;
     else
@@ -41103,7 +41049,7 @@ end;
 
 {$ifndef LVCL}
 {$ifndef FPC}
-{$ifdef MSWINDOWS}
+{$ifndef UNICODE}
 
 const
   MemoryDelta = $8000; // 32 KB granularity (must be a power of 2)
@@ -41140,7 +41086,7 @@ begin
   end;
 end;
 
-{$endif MSWINDOWS}
+{$endif UNICODE}
 {$endif FPC}
 {$endif LVCL}
 
@@ -49930,7 +49876,7 @@ end;
 procedure TDynArray.LoadFromStream(Stream: TCustomMemoryStream);
 var P: PAnsiChar;
 begin
-  P := PAnsiChar(Stream.Memory)+Stream.Seek(0,soFromCurrent);
+  P := PAnsiChar(Stream.Memory)+Stream.Seek(0,soCurrent);
   Stream.Seek(LoadFrom(P,nil,false,PAnsiChar(Stream.Memory)+Stream.Size)-P,soCurrent);
 end;
 
@@ -51985,7 +51931,7 @@ begin // on input: HashTable[result] slot is already computed
   if HashTableSize<n then
     RaiseFatalCollision('HashAdd HashTableSize',aHashCode);
   if HashTableSize-n<n shr 2 then begin // grow hash table when 25% void
-    ReHash({foradd=}true,{grow=}true);
+    ReHash({foradd=}true);
     result := Find(aHashCode,{foradd=}true); // recompute position
     if result>=0 then
       RaiseFatalCollision('HashAdd',aHashCode);
@@ -52232,7 +52178,7 @@ begin
     end;
   end;
   if not(canHash in State) then
-    ReHash({forced=}true,{grow=}false); // hash previous CountTrigger items
+    ReHash({forced=}true); // hash previous CountTrigger items
   result := FindOrNew(aHashCode,Elem,nil);
   if result<0 then begin // found no matching item
     wasAdded := true;
@@ -52306,7 +52252,7 @@ begin
     inc(ScanCounter);
     if ScanCounter>=CountTrigger*2 then begin
       CountTrigger := 2; // rather use hashing from now on
-      ReHash(false,false);   // set HashTable[] and canHash
+      ReHash(false);   // set HashTable[] and canHash
     end;
   end;
 end;
@@ -52323,34 +52269,30 @@ begin
     result := -1; // for coherency with most search methods
 end;
 
-function TDynArrayHasher.ReHash(forced, forceGrow: boolean): integer;
+function TDynArrayHasher.ReHash(forced: boolean): integer;
 var i, n, cap, siz, ndx: integer;
     P: PAnsiChar;
     hc: cardinal;
 begin
   result := 0;
-  // initialize a new void HashTable[]=0
-  siz := HashTableSize;
-  Clear;
-  if not(hasHasher in State) then
-    exit;
   n := DynArray^.Count;
-  if not forced and ((n=0) or (n<CountTrigger)) then
+  if not (Assigned(HashElement) or Assigned(EventHash)) or
+     (not forced and ((n=0) or (n<CountTrigger))) then begin
+    Clear; // reset HashTable[]
     exit; // hash only if needed, and avoid GPF after TDynArray.Clear (Count=0)
-  if forceGrow and (siz>0) then // next power of two or next prime
-    {$ifdef CPU32DELPHI}
-    if siz<HASH_PO2 then
-      siz := siz shl 1 else {$endif}
-      siz := NextPrime(siz) else begin
-    cap := DynArray^.Capacity*2; // Capacity better than Count - *2 for void slots
-    {$ifdef CPU32DELPHI}
-    if cap<=HASH_PO2 then begin
-      siz := 256; // find nearest power of two for fast bitwise division
-      while siz<cap do
-        siz := siz shl 1;
-    end else {$endif}
-      siz := NextPrime(cap);
   end;
+  cap := DynArray^.Capacity * 2; // to reserve some void slots
+  {$ifdef CPU32DELPHI}
+  if cap<=HASH_PO2 then begin
+    siz := 256;
+    while siz<cap do // find nearest power of two for fast bitwise division
+      siz := siz shl 1;
+  end else
+  {$endif CPU32DELPHI}
+    siz := NextPrime(cap);
+  if (not forced) and (siz=HashTableSize) then
+    exit; // was a paranoid ReHash() call
+  Clear;
   HashTableSize := siz;
   SetLength(HashTable,siz); // fill with 0 (void slot)
   // fill HashTable[]=index+1 from all existing items
@@ -52628,9 +52570,9 @@ begin
   result := fHash.GetHashFromIndex(aIndex);
 end;
 
-function TDynArrayHashed.ReHash(forAdd: boolean; forceGrow: boolean): integer;
+function TDynArrayHashed.ReHash(forAdd: boolean): integer;
 begin
-  result := fHash.ReHash(forAdd,forceGrow);
+  result := fHash.ReHash(forAdd);
 end;
 
 
@@ -56262,7 +56204,7 @@ begin
     end;
   if aStream<>nil then begin
     fStream := aStream;
-    fInitialStreamPosition := fStream.Seek(0,soFromCurrent);
+    fInitialStreamPosition := fStream.Seek(0,soCurrent);
     fTotalFileSize := fInitialStreamPosition;
   end;
 end;
@@ -59282,7 +59224,7 @@ begin
     {$elseif defined(VER320)}'Delphi 10.2 Tokyo'
     {$elseif defined(VER330)}'Delphi 10.3 Rio'
     {$elseif defined(VER340)}'Delphi 10.4 Sydney'
-    {$elseif defined(VER350)}'Delphi 10.5 Next'
+    {$elseif defined(VER350)}'Delphi 11 Next'
     {$ifend}
   {$endif CONDITIONALEXPRESSIONS}
 {$endif FPC}
@@ -61426,7 +61368,7 @@ begin
       exit;
     if Source.InheritsFrom(TCustomMemoryStream) then begin
       S := PAnsiChar(TCustomMemoryStream(Source).Memory)+PtrUInt(sourcePosition);
-      Source.Seek(Head.CompressedSize,soFromCurrent);
+      Source.Seek(Head.CompressedSize,soCurrent);
     end else begin
       if Head.CompressedSize>length(Buf) then
         SetString(Buf,nil,Head.CompressedSize);
@@ -62871,7 +62813,7 @@ begin
   GetCPUID(7,regs);
   PIntegerArray(@CpuFeatures)^[2] := regs.ebx;
   PIntegerArray(@CpuFeatures)^[3] := regs.ecx;
-  PByte(@PIntegerArray(@CpuFeatures)^[4])^ := regs.edx;
+  PIntegerArray(@CpuFeatures)^[4] := regs.edx;
   {$ifdef DISABLE_SSE42} // paranoid execution on Darwin x64 (as reported by alf)
   CpuFeatures := CpuFeatures-[cfSSE42,cfAESNI];
   {$endif DISABLE_SSE42}

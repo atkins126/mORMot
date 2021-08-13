@@ -605,7 +605,7 @@ implementation
   /// free an entire slist
   procedure curl_slist_free_all(list: TCurlSList); cdecl; external;
   /// create a shared object
-  function curl_share_init: pointer; cdecl; external
+  function curl_share_init: pointer; cdecl; external;
   /// clean up a shared object
   function curl_share_cleanup(share_handle: TCurlShare): CURLSHcode; cdecl; external;
   /// set options for a shared object
@@ -722,7 +722,7 @@ begin
     curl.share_init := @curl_share_init;
     curl.share_cleanup := @curl_share_cleanup;
     curl.share_setopt := @curl_share_setopt;
-    curl.strerror := @curl_share_strerror;
+    curl.share_strerror := @curl_share_strerror;
     {$ifdef LIBCURLMULTI}
     curl.multi_add_handle := @curl_multi_add_handle;
     curl.multi_assign := @curl_multi_assign;
@@ -830,7 +830,10 @@ begin
   curl.share_setopt(curl.globalShare,CURLSHOPT_UNLOCKFUNC,@curlShareUnLock);
   curl.share_setopt(curl.globalShare,CURLSHOPT_SHARE,CURL_LOCK_DATA_DNS);
   curl.share_setopt(curl.globalShare,CURLSHOPT_SHARE,CURL_LOCK_DATA_SSL_SESSION);
-  // curl.share_setopt(curl.globalShare,CURLSHOPT_SHARE,CURL_LOCK_DATA_CONNECT);
+  // CURL_LOCK_DATA_CONNECT triggers GPF e.g. on Debian Burster 10
+  if curl.info.version_num>=$00074400 then // seems to be fixed in 7.68
+    // see https://github.com/curl/curl/issues/4544
+    curl.share_setopt(curl.globalShare,CURLSHOPT_SHARE,CURL_LOCK_DATA_CONNECT);
   // CURL_LOCK_DATA_CONNECT triggers GPF on Debian Burster 10
   result := true;
 end;

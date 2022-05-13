@@ -6,7 +6,7 @@ unit SynPdf;
 {
     This file is part of Synopse framework.
 
-    Synopse framework. Copyright (C) 2021 Arnaud Bouchez
+    Synopse framework. Copyright (C) 2022 Arnaud Bouchez
       Synopse Informatique - https://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -25,7 +25,7 @@ unit SynPdf;
 
   The Initial Developer of the Original Code is Arnaud Bouchez.
 
-  Portions created by the Initial Developer are Copyright (C) 2021
+  Portions created by the Initial Developer are Copyright (C) 2022
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -112,8 +112,8 @@ unit SynPdf;
 { - if defined, the PDF engine will use the Windows Uniscribe API to
   render Ordering and Shaping of the text (useful for Hebrew, Arabic and
   some Asiatic languages)
-  - this feature need the TPdfDocument.UseUniscribe property to be forced to true
-  according to the language of the text you want to render
+  - this feature need the TPdfDocument.UseUniscribe property to be forced to
+  true according to the language of the text you want to render
   - can be undefined to safe some KB if you're sure you won't need it }
 {$ifdef NO_USE_UNISCRIBE}
   { this special conditional can be set globaly for an application which doesn't
@@ -257,7 +257,7 @@ type
     /// Offset of the mapping table
     offset: Cardinal;
   end;
-  /// The 'hhea' table contains information needed to layout fonts whose
+  /// 'hhea' table contains information needed to layout fonts whose
   // characters are written horizontally, that is, either left to right or
   // right to left
   TCmapHHEA = packed record
@@ -276,7 +276,7 @@ type
     metricDataFormat: SmallInt;
     numOfLongHorMetrics: word;
   end;
-  /// The 'head' table contains global information about the font
+  /// 'head' table contains global information about the font
   TCmapHEAD = packed record
     version: longint;
     fontRevision: longint;
@@ -845,6 +845,10 @@ type
   TPdfName = class(TPdfText)
   protected
     procedure InternalWriteTo(W: TPdfWrite); override;
+  public
+    /// append the 'SUBSET+' prefix to the Value
+    // - used e.g. to notify that a font is included as a subset
+    procedure AppendPrefix;
   end;
 
   /// used to store an array of PDF objects
@@ -1270,6 +1274,11 @@ type
     procedure NewDoc;
     /// add a Page to the current PDF document
     function AddPage: TPdfPage; virtual;
+    /// register a font to the internal TTF font list
+    // - some fonts may not be enumerated in the system, e.g. after calling
+    // AddFontMemResourceEx, so could be registered by this method
+    // - to be called just after Create(), before anything is written
+    function AddTrueTypeFont(const TTFName: RawUtf8): boolean;
     /// create a Pages object
     // - Pages objects can be nested, to save memory used by the Viewer
     // - only necessary if you have more than 8000 pages (this method is called
@@ -3761,6 +3770,24 @@ begin
   W.Add('/').AddEscapeName(pointer(FValue));
 end;
 
+procedure TPdfName.AppendPrefix;
+var prefix: RawUtf8;
+    c: cardinal;
+    i: PtrInt;
+begin
+  if self=nil then
+    exit;
+  SetLength(prefix, 7);
+  c := Random32; // we will consume only 24-bit of randomness
+  for i := 1 to 6 do
+  begin
+    prefix[i] := AnsiChar((c and 15) + 65);
+    c := c shr 4;
+  end;
+  prefix[7] := '+';
+  FValue := prefix+FValue; // we ensured a single subset per font
+end;
+
 
 { TPdfArray }
 
@@ -5661,7 +5688,6 @@ var CatalogDictionary: TPdfDictionary;
     RGB: TPdfStream;
     ID: TPdfArray;
     IDs: PDFString;
-    i: integer;
     NeedFileID: boolean;
     FileID: array[0..3] of cardinal;
     {$ifndef USE_PDFSECURITY}
@@ -5757,10 +5783,7 @@ begin
     NeedFileID := true;
   end;
   if NeedFileID then begin
-    Randomize;
-    for i := 0 to high(FileID) do
-      FileID[i] := cardinal(Random(MaxInt));
-    inc(FileID[0],GetTickCount);
+    FillRandom(@FileID, 4, true);
     {$ifdef USE_PDFSECURITY}
     fFileID := MD5Buf(FileID[0],16);
     IDs := '<'+RawByteString(MD5DigestToString(fFileID))+'>';
@@ -5817,6 +5840,15 @@ begin
   result.AddItem('Contents',TPdfStream.Create(self));
   // assign this page to the current PDF canvas
   FCanvas.SetPage(result);
+end;
+
+function TPdfDocument.AddTrueTypeFont(const TTFName: RawUtf8): boolean;
+begin
+  result := GetTrueTypeFontIndex(TTFName) < 0;
+  if not result then
+    exit;
+  AddRawUTF8(FTrueTypeFonts,TTFName);
+  QuickSortRawUTF8(FTrueTypeFonts,length(FTrueTypeFonts),nil,@StrIComp);
 end;
 
 procedure TPdfDocument.FreeDoc;
@@ -6110,11 +6142,13 @@ const
   TTFCFP_MS_PLATFORMID = 3;
   TTFCFP_SYMBOL_CHAR_SET = 0;
   TTFCFP_UNICODE_CHAR_SET = 1;
+  TTFCFP_DONT_CARE = 65535;
 
   TTFCFP_FLAGS_SUBSET = 1;
   TTFMFP_SUBSET = 0;
   TTFCFP_FLAGS_TTC = 4;
-  TTCF_TABLE = $66637474;
+  HEAD_TABLE = $64616568; // 'head'
+  TTCF_TABLE = $66637474; // 'ttcf'
 
 type
   /// a TTF name record used for the 'name' Format 4 table
@@ -7270,7 +7304,7 @@ begin
     if FPage.FFont.FTrueTypeFontsIndex=0 then begin
       Ansi := CurrentAnsiConvert.UnicodeBufferToAnsi(PW,StrLenW(PW));
       i := 1;
-      while i<length(Ansi) do begin // loop is MBCS ready
+      while i<=length(Ansi) do begin // loop is MBCS ready
         inc(W,FPage.FFont.GetAnsiCharWidth(Ansi,i));
         if SysLocale.FarEast  then
           i := NextCharIndex(Ansi,i) else
@@ -7919,7 +7953,11 @@ function TPdfFontTrueType.FindOrAddUsedWideChar(aWideChar: WideChar): integer;
 var n, i: integer;
     aSymbolAnsiChar: AnsiChar;
 begin
-  self := WinAnsiFont;
+  if WinAnsiFont <> self then // WinAnsiFont.fUsedWide[] = glyphs for ShowText 
+  begin
+    result := WinAnsiFont.FindOrAddUsedWideChar(aWideChar);
+    exit;
+  end;
   result := fUsedWideChar.Add(ord(aWideChar));
   if result<0 then begin
     result := -(result+1); // this WideChar was already existing -> return index
@@ -8075,14 +8113,15 @@ begin
 end;
 
 function TPdfFontTrueType.GetWideCharWidth(aWideChar: WideChar): Integer;
+var ref: TPdfFontTrueType;
 begin
-  self := self.WinAnsiFont; // we need fUsedWide[] to be used glyphs
+  ref := WinAnsiFont; // WinAnsiFont.fUsedWide[] = glyphs used by ShowText
   result := WideCharToWinAnsi(ord(aWideChar));
   if result>=0 then
-    if (fWinAnsiWidth<>nil) and (result>=32) then
-      result := fWinAnsiWidth[AnsiChar(result)] else
-      result := fDefaultWidth else
-      result := fUsedWide[FindOrAddUsedWideChar(aWideChar)].Width;
+    if (ref.fWinAnsiWidth<>nil) and (result>=32) then
+      result := ref.fWinAnsiWidth[AnsiChar(result)] else
+      result := ref.fDefaultWidth else
+      result := ref.fUsedWide[ref.FindOrAddUsedWideChar(aWideChar)].Width;
 end;
 
 { font subset embedding using Windows XP CreateFontPackage() FontSub.dll
@@ -8102,6 +8141,95 @@ end;
 procedure lpfnFree(Buffer: pointer); cdecl;
 begin
   FreeMem(Buffer);
+end;
+
+type
+  TTtfTableDirectory = packed record
+    sfntVersion: cardinal; // 0x00010000 for version 1.0
+    numTables: word;       // number of tables
+    searchRange: word;     // HighBit(NumTables) x 16
+    entrySelector: word;   // Log2(HighBit(NumTables))
+    rangeShift: word;      // NumTables x 16 - SearchRange
+  end;
+  PTtfTableDirectory = ^TTtfTableDirectory;
+  
+  TTtfTableEntry = packed record
+    tag: cardinal;      // table identifier
+    checksum: cardinal; // checksum for this table
+    offset: cardinal;   // offset from start of font file
+    length: cardinal;   // length of this table
+  end;
+  PTtfTableEntry = ^TTtfTableEntry;
+
+const
+  // see http://www.4real.gr/technical-documents-ttf-subset.html and
+  // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6.html
+  TTF_SUBSET: array[0..9] of array[0..3] of AnsiChar = (
+    'head', 'cvt ', 'fpgm', 'prep', 'hhea', 'maxp', 'hmtx', 'cmap', 'loca', 'glyf');
+
+procedure ReduceTTF(out ttf: PDFString; SubSetData: pointer; SubSetSize: integer);
+var dir: PTtfTableDirectory;
+    d, e: PTtfTableEntry;
+    head: ^TCmapHEAD;
+    n, i, len: PtrInt;
+    checksum: cardinal;
+begin
+  SetLength(ttf, SubSetSize); // maximum size
+  d := pointer(ttf);
+  inc(PTtfTableDirectory(d));
+  // identify the tables to be included
+  e := SubSetData;
+  inc(PTtfTableDirectory(e));
+  n := 0;
+  if SubSetSize > SizeOf(dir^) then 
+    for i := 1 to swap(PTtfTableDirectory(SubSetData)^.numTables) do begin
+      if IntegerScan(@TTF_SUBSET, length(TTF_SUBSET), e^.tag) <> nil then begin
+        d^ := e^;
+        inc(d);
+        inc(n);
+      end;
+      inc(e);
+    end;
+  // update the main directory
+  if n < 8 then begin // pdf expects 10, and 8..15 for our fixed dir^ values
+    MoveFast(SubSetData^, pointer(ttf)^, SubSetSize); // paranoid
+    exit;
+  end;
+  dir := pointer(ttf);
+  dir^.sfntVersion := PTtfTableDirectory(SubSetData)^.sfntVersion;
+  dir^.numTables := swap(word(n));
+  //len := HighBit(n); // always 8 when n in 8..15
+  //dir^.searchRange := swap(len * 16);
+  //dir^.entrySelector := swap(Floor(log2(len))); // requires the Math unit
+  //dir^.rangeShift := swap((integer(n) - len) * 16);
+  dir^.searchRange := 32768; // pre-computed values for n in 8..15
+  dir^.entrySelector := 768;
+  dir^.rangeShift := 8192;
+  // include the associated data
+  checksum := 0;
+  head := nil;
+  e := pointer(ttf);
+  inc(PTtfTableDirectory(e));
+  for i := 1 to n do begin
+    len := bswap32(e^.length);
+    MoveFast(PByteArray(SubSetData)[bswap32(e^.offset)], d^, len);
+    e^.offset := bswap32(PtrUInt(d) - PtrUInt(ttf));
+    if e^.tag = HEAD_TABLE then // 'head' table
+      head := pointer(d);
+    while len and 3 <> 0 do begin // 32-bit padding
+      PByteArray(d)[len] := 0;
+      inc(len);
+    end;
+    inc(checksum, bswap32(e^.checksum)); // we didn't change the table itself
+    inc(PByte(d), len);
+    inc(e);
+  end;
+  // finalize the generated content
+  for i := 0 to ((SizeOf(dir^) + (integer(n) * SizeOf(e^))) shr 2) - 1 do
+    inc(checksum, PCardinalArray(ttf)[i]);
+  if head <> nil then
+    head^.checkSumAdjustment := bswap32($B1B0AFBA - checksum);
+  PStrLen(PtrUInt(ttf) - _STRLEN)^ := PtrUInt(d) - PtrUInt(ttf); // no realloc
 end;
 
 var
@@ -8132,7 +8260,6 @@ var c: AnsiChar;
     tableTag: Longword;
     {$ifndef DELPHI5OROLDER}
     ttcNumFonts: Longword;
-    ttcBytes: array of byte;
     {$endif}
 begin
   DS := THeapMemoryStream.Create;
@@ -8236,9 +8363,8 @@ begin
         if ttfSize<>GDI_ERROR then begin
           // Yes, the font is in a .ttc collection
           // find out how many fonts are included in the collection
-          SetLength(ttcBytes,4);
-          if GetFontData(fDoc.FDC,TTCF_TABLE,8,pointer(ttcBytes),4) <> GDI_ERROR then
-            ttcNumFonts := ttcBytes[3] else // Higher bytes will be zero
+          if GetFontData(fDoc.FDC,TTCF_TABLE,8,@ttcNumFonts,4) <> GDI_ERROR then
+            ttcNumFonts := bswap32(ttcNumFonts) else 
             ttcNumFonts := 1;
           // we need to find out the index of the font within the ttc collection
           // (this is not easy, so GetTTCIndex uses lookup on known ttc fonts)
@@ -8277,12 +8403,15 @@ begin
                 if CreateFontPackage(pointer(ttf),ttfSize,
                     SubSetData,SubSetMem,SubSetSize,
                     usFlags,ttcIndex,TTFMFP_SUBSET,0,
-                    TTFCFP_MS_PLATFORMID,TTFCFP_UNICODE_CHAR_SET,
+                    TTFCFP_MS_PLATFORMID,TTFCFP_DONT_CARE,
                     pointer(Used.Values),Used.Count,
                     @lpfnAllocate,@lpfnReAllocate,@lpfnFree,nil)=0 then begin
                   // subset was created successfully -> save to PDF file
-                  SetString(ttf,SubSetData,SubSetSize);
+                  ReduceTTF(ttf,SubSetData,SubSetSize);
                   FreeMem(SubSetData);
+                  // see 5.5.3 Font Subsets: begins with a tag followed by a +
+                  TPdfName(fFontDescriptor.ValueByName('FontName')).AppendPrefix;
+                  TPdfName(fFontDescriptor.ValueByName('BaseFont')).AppendPrefix;
                 end;
               end;
             end;

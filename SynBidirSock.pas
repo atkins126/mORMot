@@ -6,7 +6,7 @@ unit SynBidirSock;
 {
     This file is part of the Synopse framework.
 
-    Synopse framework. Copyright (C) 2023 Arnaud Bouchez
+    Synopse framework. Copyright (c) Arnaud Bouchez
       Synopse Informatique - https://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -25,7 +25,7 @@ unit SynBidirSock;
 
   The Initial Developer of the Original Code is Arnaud Bouchez.
 
-  Portions created by the Initial Developer are Copyright (C) 2023
+  Portions created by the Initial Developer are Copyright (c)
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -2300,17 +2300,19 @@ end;
 function TWebSocketProtocolList.CloneByName(
   const aProtocolName, aClientURI: RawUTF8): TWebSocketProtocol;
 var i: Integer;
+   clientUri : RawUtf8;
 begin
   result := nil;
   if self=nil then
     exit;
+  clientUri :=  Split(aClientURI, '?');
   fSafe.Lock;
   try
     for i := 0 to length(fProtocols)-1 do
       with fProtocols[i] do
-      if ((fURI='') or IdemPropNameU(fURI,aClientURI)) and
+      if ((fURI='') or IdemPropNameU(fURI,clientUri)) and
          SetSubprotocol(aProtocolName) then begin
-        result := fProtocols[i].Clone(aClientURI);
+        result := fProtocols[i].Clone(clientUri);
         result.fName := aProtocolName;
         exit;
       end;
@@ -2321,15 +2323,17 @@ end;
 
 function TWebSocketProtocolList.CloneByURI(const aClientURI: RawUTF8): TWebSocketProtocol;
 var i: integer;
+  clientUri : RawUtf8;
 begin
   result := nil;
   if (self=nil) or (aClientURI='') then
     exit;
+  clientUri :=  Split(aClientURI, '?');
   fSafe.Lock;
   try
     for i := 0 to length(fProtocols)-1 do
-      if IdemPropNameU(fProtocols[i].fURI,aClientURI) then begin
-        result := fProtocols[i].Clone(aClientURI);
+      if IdemPropNameU(fProtocols[i].fURI,clientUri) then begin
+        result := fProtocols[i].Clone(clientUri);
         exit;
       end;
   finally
